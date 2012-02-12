@@ -36,6 +36,12 @@
 #include <errno.h>
 #include "ashmemalloc.h"
 
+#define ASHMEM_CACHE_FLUSH_RANGE        _IO(__ASHMEMIOC, 11)
+
+int get_ashmem_file(int fd, struct file **filp, struct file **vm_file,
+                         unsigned long *len);
+void put_ashmem_file(struct file *file);
+
 using gralloc::AshmemAlloc;
 int AshmemAlloc::alloc_buffer(alloc_data& data)
 {
