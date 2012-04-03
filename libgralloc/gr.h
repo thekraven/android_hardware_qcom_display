@@ -50,8 +50,7 @@ inline size_t ALIGN(size_t x, size_t align) {
 
 int mapFrameBufferLocked(struct private_module_t* module);
 int terminateBuffer(gralloc_module_t const* module, private_handle_t* hnd);
-size_t getBufferSizeAndDimensions(int width, int height, int format,
-                        int& alignedw, int &alignedh);
+size_t getBufferSizeAndDimensions(int width, int height, int format, int &alignedw, int &alignedh);
 
 int decideBufferHandlingMechanism(int format, const char *compositionUsed,
                                    int hasBlitEngine, int *needConversion,
