@@ -337,8 +337,8 @@ sp<IMemAlloc> PmemAshmemController::getAllocator(int flags)
     return memalloc;
 }
 
-size_t getBufferSizeAndDimensions(int width, int height, int format,
-                        int& alignedw, int &alignedh)
+size_t getBufferSizeAndDimensions(int width, int height, int format, int &alignedw, int &alignedh)
+
 {
     size_t size;
 
