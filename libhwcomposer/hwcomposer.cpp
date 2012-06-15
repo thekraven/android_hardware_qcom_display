@@ -28,6 +28,7 @@
 #include <cutils/atomic.h>
 #include <cutils/properties.h>
 
+#include <gralloc_priv.h>
 #include <hardware/hwcomposer.h>
 #include <overlayLib.h>
 #include <overlayLibUI.h>
@@ -36,7 +37,6 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <ui/android_native_buffer.h>
-#include <gralloc_priv.h>
 #include <genlock.h>
 #include <qcom_ui.h>
 #include <gr.h>
@@ -100,6 +100,7 @@ struct hwc_context_t {
 #if defined HDMI_DUAL_DISPLAY
     external_display_type mHDMIEnabled; // Type of external display
     bool pendingHDMI;
+    bool forceComposition; //Used to force composition on HDMI connection.
 #endif
     int previousLayerCount;
     eHWCOverlayStatus hwcOverlayStatus;
@@ -148,7 +149,7 @@ struct private_hwc_module_t HAL_MODULE_INFO_SYM = {
 
 static void dump_layer(hwc_layer_t const* l) {
     LOGD("\ttype=%d, flags=%08x, handle=%p, tr=%02x, blend=%04x, {%d,%d,%d,%d}, {%d,%d,%d,%d}",
-            l->compositionType, l->flags, l->handle, l->transform, l->blending,
+            l->compositionType, l->flags, l->handle, l->transform & FINAL_TRANSFORM_MASK, l->blending,
             l->sourceCrop.left,
             l->sourceCrop.top,
             l->sourceCrop.right,
@@ -390,7 +391,7 @@ static int prepareBypass(hwc_context_t *ctx, hwc_layer_t *layer,
         info.size = hnd->size;
 
         int fbnum = 0;
-        int orientation = layer->transform;
+        int orientation = layer->transform & FINAL_TRANSFORM_MASK;
         const bool useVGPipe =
 #ifdef NO_BYPASS_CROPPING
                 (nPipeIndex != (MAX_BYPASS_LAYERS - 2));
@@ -489,7 +490,7 @@ inline static bool isBypassDoable(hwc_composer_device_t *dev, const int yuvCount
 
     //Bypass is not efficient if rotation or asynchronous mode is needed.
     for(int i = 0; i < list->numHwLayers; ++i) {
-        if(list->hwLayers[i].transform) {
+        if(list->hwLayers[i].transform & FINAL_TRANSFORM_MASK) {
             return false;
         }
         if(list->hwLayers[i].flags & HWC_LAYER_ASYNCHRONOUS) {
@@ -819,6 +820,13 @@ bool canSkipComposition(hwc_context_t* ctx, int yuvBufferCount, int currentLayer
         LOGE("canSkipComposition invalid context");
         return false;
     }
+
+#if defined HDMI_DUAL_DISPLAY
+    if(ctx->forceComposition) {
+        ctx->forceComposition = false;
+        return false;
+    }
+#endif
 
     hwc_composer_device_t* dev = (hwc_composer_device_t *)(ctx);
     private_hwc_module_t* hwcModule = reinterpret_cast<private_hwc_module_t*>(
@@ -1737,6 +1745,7 @@ static int hwc_set(hwc_composer_device_t *dev,
              * Used when the video is paused and external
              * display is connected
              */
+            ctx->forceComposition = true;
             proc->invalidate(proc);
         }
     }
