@@ -73,13 +73,11 @@ namespace {
             return GENLOCK_FAILURE;
         }
 
-
-            genlock_lock lock;
-            lock.op = lockType;
-            lock.flags = flags;
-            lock.timeout = timeout;
-            lock.fd = hnd->genlockHandle;
-
+        genlock_lock lock;
+        lock.op = lockType;
+        lock.flags = 0;
+        lock.timeout = timeout;
+        lock.fd = hnd->genlockHandle;
 
 #ifdef GENLOCK_IOC_DREADLOCK
             if (ioctl(hnd->genlockPrivFd, GENLOCK_IOC_DREADLOCK, &lock)) {
@@ -89,18 +87,16 @@ namespace {
                     return GENLOCK_TIMEDOUT;
 
                 return GENLOCK_FAILURE;
-            }
+			}            
 #else
             // depreciated
-            if (ioctl(hnd->genlockPrivFd, GENLOCK_IOC_LOCK, &lock)) {
-                LOGE("%s: GENLOCK_IOC_LOCK failed (lockType0x%x, err=%s fd=%d)", __FUNCTION__,
-                        lockType, strerror(errno), hnd->fd);
-                if (ETIMEDOUT == errno)
-                    return GENLOCK_TIMEDOUT;
+        if (ioctl(hnd->genlockPrivFd, GENLOCK_IOC_LOCK, &lock)) {
+            LOGE("%s: GENLOCK_IOC_LOCK failed (lockType0x%x, err=%s fd=%d)", __FUNCTION__,
+                    lockType, strerror(errno), hnd->fd);
+            if (ETIMEDOUT == errno)
+                return GENLOCK_TIMEDOUT;
 
-                return GENLOCK_FAILURE;
-
-            }
+            return GENLOCK_FAILURE;
 
 #endif
         }
