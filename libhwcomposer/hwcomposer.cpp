@@ -94,7 +94,7 @@ struct hwc_context_t {
     int layerindex[MAX_BYPASS_LAYERS];
     int nPipesUsed;
     BypassState bypassState;
-    IdleTimer idleTimer;
+    IdleTimer *idleTimer;
     bool idleTimeOut;
 #endif
 #if defined HDMI_DUAL_DISPLAY
@@ -1360,12 +1360,10 @@ static int drawLayerUsingCopybit(hwc_composer_device_t *dev, hwc_layer_t *layer,
         genlock_unlock_buffer(hnd);
         return -1;
     }
-    int alignment = 32;
-    if( HAL_PIXEL_FORMAT_RGB_565 == fbHandle->format )
-        alignment = 16;
-     // Set the copybit source:
+
+    // Set the copybit source:
     copybit_image_t src;
-    src.w = ALIGN(hnd->width, alignment);
+    src.w = hnd->width;
     src.h = hnd->height;
     src.format = hnd->format;
     src.base = (void *)hnd->base;
@@ -1392,7 +1390,7 @@ static int drawLayerUsingCopybit(hwc_composer_device_t *dev, hwc_layer_t *layer,
 
     // Copybit dst
     copybit_image_t dst;
-    dst.w = ALIGN(fbHandle->width,alignment);
+    dst.w = ALIGN(fbHandle->width,32);
     dst.h = fbHandle->height;
     dst.format = fbHandle->format;
     dst.base = (void *)fbHandle->base;
@@ -1662,7 +1660,8 @@ static int hwc_set(hwc_composer_device_t *dev,
                 continue;
 #ifdef COMPOSITION_BYPASS
             } else if (list->hwLayers[i].flags & HWC_COMP_BYPASS) {
-                ctx->idleTimer.reset();
+                if(ctx->idleTimer)
+                    ctx->idleTimer->reset();
                 drawLayerUsingBypass(ctx, &(list->hwLayers[i]), i);
 #endif
             } else if (list->hwLayers[i].compositionType == HWC_USE_OVERLAY) {
@@ -1788,11 +1787,16 @@ static int hwc_device_close(struct hw_device_t *dev)
          delete ctx->mOverlayLibObject;
          ctx->mOverlayLibObject = NULL;
 #ifdef COMPOSITION_BYPASS
-            for(int i = 0; i < MAX_BYPASS_LAYERS; i++) {
-                delete ctx->mOvUI[i];
-            }
-            unlockPreviousBypassBuffers(ctx);
-            unsetBypassBufferLockState(ctx);
+         for(int i = 0; i < MAX_BYPASS_LAYERS; i++) {
+             delete ctx->mOvUI[i];
+         }
+         unlockPreviousBypassBuffers(ctx);
+         unsetBypassBufferLockState(ctx);
+
+         if(ctx->idleTimer) {
+            delete ctx->idleTimer;
+            ctx->idleTimer = NULL;
+         }
 #endif
         ExtDispOnly::close();
         ExtDispOnly::destroy();
@@ -1892,9 +1896,16 @@ static int hwc_device_open(const struct hw_module_t* module, const char* name,
                 idle_timeout = atoi(property);
         }
 
-        dev->idleTimer.create(timeout_handler, dev);
-        dev->idleTimer.setFreq(idle_timeout);
-        dev->idleTimeOut = false;
+        //create and arm Idle Timer
+        dev->idleTimer = new IdleTimer;
+
+        if(dev->idleTimer == NULL) {
+            LOGE("%s: failed to instantiate idleTimer object", __FUNCTION__);
+        } else {
+            dev->idleTimer->create(timeout_handler, dev);
+            dev->idleTimer->setFreq(idle_timeout);
+            dev->idleTimeOut = false;
+        }
 #endif
         ExtDispOnly::init();
 #if defined HDMI_DUAL_DISPLAY
