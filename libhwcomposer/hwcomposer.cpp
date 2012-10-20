@@ -48,6 +48,12 @@
 #define LIKELY( exp )       (__builtin_expect( (exp) != 0, true  ))
 #define UNLIKELY( exp )     (__builtin_expect( (exp) != 0, false ))
 
+#define MAX_FRAME_BUFFER_NAME_SIZE 80
+#define MAX_DISPLAY_DEVICES 3
+#define MAX_DISPLAY_EXTERNAL_DEVICES (MAX_DISPLAY_DEVICES - 1)
+
+#define MAX_COPYBIT_RECT 12
+
 #ifdef COMPOSITION_BYPASS
 #define MAX_BYPASS_LAYERS 3
 #define BYPASS_DEBUG 0
@@ -105,6 +111,15 @@ struct hwc_context_t {
     int previousLayerCount;
     eHWCOverlayStatus hwcOverlayStatus;
     int swapInterval;
+    bool premultipliedAlpha;
+};
+
+static int extDeviceFbIndex[MAX_DISPLAY_EXTERNAL_DEVICES];
+
+static const char *extFrameBufferName[MAX_DISPLAY_EXTERNAL_DEVICES] =
+{
+    "dtv panel",
+    "writeback panel"
 };
 
 static int hwc_device_open(const struct hw_module_t* module, const char* name,
@@ -455,7 +470,7 @@ static int prepareBypass(hwc_context_t *ctx, hwc_layer_t *layer,
 
         ovUI->setSource(info, orientation);
         ovUI->setCrop(crop.left, crop.top, crop_w, crop_h);
-        ovUI->setDisplayParams(fbnum, waitForVsync, isFg, zorder, useVGPipe);
+        ovUI->setDisplayParams(fbnum, waitForVsync, isFg, zorder, useVGPipe,(layer->blending == HWC_BLENDING_PREMULT));
         ovUI->setPosition(dst.left, dst.top, dst_w, dst_h);
 
         LOGE_IF(BYPASS_DEBUG,"%s: Bypass set: crop[%d,%d,%d,%d] dst[%d,%d,%d,%d] waitforVsync: %d \
@@ -772,8 +787,10 @@ static int hwc_closeOverlayChannels(hwc_context_t* ctx) {
 /*
  * Configures mdp pipes
  */
-static int prepareOverlay(hwc_context_t *ctx, hwc_layer_t *layer, const int flags) {
-     int ret = 0;
+static int prepareOverlay(hwc_context_t *ctx,
+                          hwc_layer_t *layer,
+                          int flags) {
+    int ret = 0;
 
 #ifdef COMPOSITION_BYPASS
      if(ctx && (ctx->bypassState != BYPASS_OFF)) {
@@ -802,6 +819,11 @@ static int prepareOverlay(hwc_context_t *ctx, hwc_layer_t *layer, const int flag
         info.size = hnd->size;
 
         int hdmiConnected = 0;
+
+        if(ctx->premultipliedAlpha)
+             flags |= OVERLAY_BLENDING_PREMULT;
+        else
+             flags &= ~OVERLAY_BLENDING_PREMULT;
 
 #if defined HDMI_DUAL_DISPLAY
         if(!ctx->pendingHDMI) //makes sure the UI channel is opened first
@@ -988,6 +1010,40 @@ static void hwc_registerProcs(struct hwc_composer_device* dev, hwc_procs_t const
 }
 
 /*
+ * Returns the framebuffer index associated with the external display device
+ *
+ */
+static inline int getExtDeviceFBIndex(int index)
+{
+    return extDeviceFbIndex[index];
+}
+
+/*
+ * Updates extDeviceFbIndex Array with the correct frame buffer indices
+ * of avaiable external devices
+ *
+ */
+static void updateExtDispDevFbIndex()
+{
+    FILE *displayDeviceFP = NULL;
+    char fbType[MAX_FRAME_BUFFER_NAME_SIZE];
+    char msmFbTypePath[MAX_FRAME_BUFFER_NAME_SIZE];
+    for(int i = 0, j = 1; j < MAX_DISPLAY_DEVICES; j++) {
+        sprintf (msmFbTypePath, "/sys/class/graphics/fb%d/msm_fb_type", j);
+        displayDeviceFP = fopen(msmFbTypePath, "r");
+        if(displayDeviceFP){
+            fread(fbType, sizeof(char), MAX_FRAME_BUFFER_NAME_SIZE, displayDeviceFP);
+            if(strncmp(fbType, extFrameBufferName[i], strlen(extFrameBufferName[i])) == 0){
+                // this is the framebuffer index that we want to send it further
+                extDeviceFbIndex[i++] = j;
+            }
+            fclose(displayDeviceFP);
+        }
+    }
+}
+
+
+/*
  * function to set the status of external display in hwc
  * Just mark flags and do stuff after eglSwapBuffers
  * externaltype - can be HDMI, WIFI or OFF
@@ -999,6 +1055,10 @@ static void hwc_enableHDMIOutput(hwc_composer_device_t *dev, int externaltype) {
                                                            dev->common.module);
     framebuffer_device_t *fbDev = hwcModule->fbDevice;
     overlay::Overlay *ovLibObject = ctx->mOverlayLibObject;
+
+    if(externaltype)
+        externaltype = getExtDeviceFBIndex(externaltype-1);
+
     if(externaltype && ctx->mHDMIEnabled &&
             (externaltype != ctx->mHDMIEnabled)) {
         // Close the current external display - as the SF will
@@ -1029,6 +1089,10 @@ static void hwc_perform(hwc_composer_device_t *dev, int event, int value) {
             hwc_enableHDMIOutput(dev, value);
             break;
 #endif
+       case EVENT_FORCE_COMPOSITION:
+            ctx->forceComposition = value;
+            break;
+
         default:
             LOGE("In hwc:perform UNKNOWN EVENT = %d!!", event);
             break;
@@ -1100,6 +1164,7 @@ static void statCount(hwc_context_t *ctx, hwc_layer_list_t* list) {
     int yuvBufCount = 0;
     int secureLayerCnt = 0;
     int layersNotUpdatingCount = 0;
+    ctx->premultipliedAlpha = false;
      if (list) {
          for (size_t i=0 ; i<list->numHwLayers; i++) {
              private_handle_t *hnd = (private_handle_t *)list->hwLayers[i].handle;
@@ -1116,6 +1181,8 @@ static void statCount(hwc_context_t *ctx, hwc_layer_list_t* list) {
                list->hwLayers[i].flags & HWC_LAYER_NOT_UPDATING) {
                layersNotUpdatingCount++;
             }
+            if(list->hwLayers[i].blending == HWC_BLENDING_PREMULT)
+                ctx->premultipliedAlpha = true;
          }
      }
     ctx->yuvBufferCount = yuvBufCount;
@@ -1532,6 +1599,19 @@ static int drawLayerUsingCopybit(hwc_composer_device_t *dev, hwc_layer_t *layer,
     hwc_region_t region = layer->visibleRegionScreen;
     region_iterator copybitRegion(region);
 
+    // Since blitting region by region is serial,
+    // If a layer has long list of dirty regions,
+    // better if we draw the full layer
+    if(region.numRects > MAX_COPYBIT_RECT) {
+        //create one clip region
+        hwc_rect display_rect = { layer->displayFrame.left,
+                                  layer->displayFrame.top,
+                                  layer->displayFrame.right,
+                                  layer->displayFrame.bottom };
+        hwc_region_t display_region = { 1, (hwc_rect_t const*)&display_rect };
+        region_iterator copyRegion(display_region);
+        copybitRegion = copyRegion;
+    }
     copybit->set_parameter(copybit, COPYBIT_FRAMEBUFFER_WIDTH, renderBuffer->width);
     copybit->set_parameter(copybit, COPYBIT_FRAMEBUFFER_HEIGHT, renderBuffer->height);
     copybit->set_parameter(copybit, COPYBIT_TRANSFORM, layer->transform);
@@ -1944,8 +2024,7 @@ static int hwc_device_open(const struct hw_module_t* module, const char* name,
         if (property_get("debug.egl.swapinterval", value, "1") > 0) {
             dev->swapInterval = atoi(value);
         }
-
-
+	dev->premultipliedAlpha = false;
         /* initialize the procs */
         dev->device.common.tag = HARDWARE_DEVICE_TAG;
         dev->device.common.version = 0;
@@ -1957,7 +2036,8 @@ static int hwc_device_open(const struct hw_module_t* module, const char* name,
         dev->device.registerProcs = hwc_registerProcs;
         dev->device.perform = hwc_perform;
         *device = &dev->device.common;
-
+        /* Store framebuffer indices of avaiable external devices*/
+        updateExtDispDevFbIndex();
         status = 0;
     }
     return status;
